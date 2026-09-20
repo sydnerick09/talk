@@ -22,7 +22,6 @@ import {
 import { generateChatToken } from "../../lib/generateToken";
 
 async function makePrivateChat(sharedToken, ownerId, visitorId) {
-  // Find an existing private conversation for this visitor.
   const { data: existingMemberships, error: membershipError } =
     await supabaseAdmin
       .from("chat_members")
@@ -48,7 +47,6 @@ async function makePrivateChat(sharedToken, ownerId, visitorId) {
     return existing.chats;
   }
 
-  // Generate a new private chat token.
   let chatToken = null;
 
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -70,7 +68,6 @@ async function makePrivateChat(sharedToken, ownerId, visitorId) {
     throw new Error("Could not create private conversation.");
   }
 
-  // Create the private chat using the basic columns.
   const { data: privateChat, error: chatError } = await supabaseAdmin
     .from("chats")
     .insert({
@@ -85,7 +82,6 @@ async function makePrivateChat(sharedToken, ownerId, visitorId) {
     throw chatError;
   }
 
-  // Add owner and visitor as members.
   const { error: memberError } = await supabaseAdmin
     .from("chat_members")
     .insert([
@@ -134,9 +130,6 @@ export async function getServerSideProps({ req, params, query }) {
     };
   }
 
-  // Find the chat from the shared token.
-  // We only use chat_token here so the API does not depend
-  // on shared_token/is_inbox being in the PostgREST schema cache.
   const { data: inbox, error: inboxError } = await supabaseAdmin
     .from("chats")
     .select("id, chat_token, created_by")
@@ -157,13 +150,6 @@ export async function getServerSideProps({ req, params, query }) {
     };
   }
 
-  /*
-   * If the owner opens the generated link, show their chat list.
-   *
-   * At this stage we use chat_members to find conversations
-   * connected to this owner instead of depending on shared_token
-   * and is_inbox.
-   */
   if (inbox.created_by === userId && !query.conversation) {
     const { data: memberRows } = await supabaseAdmin
       .from("chat_members")
@@ -179,7 +165,6 @@ export async function getServerSideProps({ req, params, query }) {
 
       if (!chat || chat.id === inbox.id) continue;
 
-      // Get members of this conversation.
       const { data: members } = await supabaseAdmin
         .from("chat_members")
         .select("user_id, users(id, name, username)")
@@ -224,13 +209,13 @@ export async function getServerSideProps({ req, params, query }) {
 
   let chat = null;
 
-  // Open an existing private conversation.
   if (query.conversation) {
-    const { data: requested, error: requestedError } = await supabaseAdmin
-      .from("chats")
-      .select("id, chat_token, created_by")
-      .eq("chat_token", String(query.conversation))
-      .maybeSingle();
+    const { data: requested, error: requestedError } =
+      await supabaseAdmin
+        .from("chats")
+        .select("id, chat_token, created_by")
+        .eq("chat_token", String(query.conversation))
+        .maybeSingle();
 
     if (requestedError || !requested) {
       return {
@@ -253,7 +238,6 @@ export async function getServerSideProps({ req, params, query }) {
 
     chat = requested;
   } else {
-    // Visitor opens the shared link.
     if (inbox.created_by === userId) {
       return {
         notFound: true,
@@ -275,7 +259,6 @@ export async function getServerSideProps({ req, params, query }) {
     }
   }
 
-  // Get participants.
   const { data: memberRows } = await supabaseAdmin
     .from("chat_members")
     .select("users(id, name, username)")
@@ -285,7 +268,6 @@ export async function getServerSideProps({ req, params, query }) {
     .map((row) => row.users)
     .filter(Boolean);
 
-  // Get messages.
   const { data: messages, error: messagesError } = await supabaseAdmin
     .from("messages")
     .select("*")
@@ -338,6 +320,7 @@ function SharedInbox({ me, sharedToken, conversations }) {
 
         <div className="chat-header-info">
           <div className="title">Your Shared Inbox</div>
+
           <div className="presence-status offline">
             Private conversations
           </div>
@@ -443,7 +426,9 @@ function PrivateConversation({
         },
         (payload) => {
           setMessages((previous) =>
-            previous.some((message) => message.id === payload.new.id)
+            previous.some(
+              (message) => message.id === payload.new.id
+            )
               ? previous
               : [...previous, payload.new]
           );
@@ -834,6 +819,11 @@ function PrivateConversation({
         </div>
       )}
 
+      {/* COMPOSER
+          Attachment = OUTSIDE typing box
+          Emoji = INSIDE typing box
+          Send = OUTSIDE typing box
+      */}
       <div className="composer">
         <input
           type="file"
@@ -843,42 +833,49 @@ function PrivateConversation({
           accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt"
         />
 
+        {/* Attachment button stays OUTSIDE */}
         <button
-          className="btn-icon emoji-toggle"
-          type="button"
-          onMouseDown={(event) =>
-            event.preventDefault()
-          }
-          onClick={() =>
-            setShowEmojiPicker((open) => !open)
-          }
-          title="Emoji"
-          aria-label="Emoji"
-        >
-          😊
-        </button>
-
-        <button
-          className="btn-icon"
+          className="btn-icon attachment-btn"
           type="button"
           onClick={() =>
             fileInputRef.current?.click()
           }
           title="Attach a file"
+          aria-label="Attach a file"
         >
           <Paperclip size={20} />
         </button>
 
-        <input
-          ref={composerInputRef}
-          type="text"
-          placeholder="Type a message..."
-          value={text}
-          onChange={handleTextChange}
-          onBlur={() => broadcastTyping(false)}
-          onKeyDown={handleKeyDown}
-        />
+        {/* Typing box */}
+        <div className="composer-input-wrap">
+          {/* Emoji button is INSIDE the typing box */}
+          <button
+            className="btn-icon emoji-toggle"
+            type="button"
+            onMouseDown={(event) =>
+              event.preventDefault()
+            }
+            onClick={() =>
+              setShowEmojiPicker((open) => !open)
+            }
+            title="Emoji"
+            aria-label="Emoji"
+          >
+            😊
+          </button>
 
+          <input
+            ref={composerInputRef}
+            type="text"
+            placeholder="Type a message..."
+            value={text}
+            onChange={handleTextChange}
+            onBlur={() => broadcastTyping(false)}
+            onKeyDown={handleKeyDown}
+          />
+        </div>
+
+        {/* Send button stays OUTSIDE */}
         <button
           className="send-btn"
           onClick={handleSend}
@@ -887,6 +884,7 @@ function PrivateConversation({
             (!text.trim() && !pendingFile)
           }
           title="Send"
+          aria-label="Send"
         >
           <Send size={18} />
         </button>
