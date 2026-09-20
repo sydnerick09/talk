@@ -1,7 +1,7 @@
 
 // POST /api/chats/create
-// Creates a new chat with a secure random link and makes the creator
-// its first member.
+// Creates a new chat with a secure random link and makes the creator its
+// first member.
 
 import { getUserIdFromRequest } from "../../../lib/session";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -9,7 +9,9 @@ import { generateChatToken } from "../../../lib/generateToken";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({
+      error: "Method not allowed",
+    });
   }
 
   const userId = getUserIdFromRequest(req);
@@ -20,9 +22,8 @@ export default async function handler(req, res) {
     });
   }
 
-  // Generate a secure random chat token.
-  // Check that the token is not already being used.
-  let chatToken = null;
+  // Generate a token and make sure it isn't already used.
+  let chatToken;
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = generateChatToken(12);
@@ -53,27 +54,14 @@ export default async function handler(req, res) {
     });
   }
 
-  // Create the chat.
-  //
-  // We intentionally do NOT send is_inbox here.
-  // The database already has:
-  //
-  // is_inbox boolean NOT NULL DEFAULT false
-  //
-  // This avoids the Supabase schema-cache error while the API cache
-  // catches up with the database schema.
-  //
-  // shared_token is set to the same token so multiple people can use
-  // the same shared chat link.
-
+  // Create the chat using the basic columns.
   const { data: chat, error } = await supabaseAdmin
     .from("chats")
     .insert({
       chat_token: chatToken,
-      shared_token: chatToken,
       created_by: userId,
     })
-    .select("id, chat_token, shared_token")
+    .select("id, chat_token")
     .single();
 
   if (error) {
@@ -84,7 +72,7 @@ export default async function handler(req, res) {
     });
   }
 
-  // The creator automatically becomes a member of the chat.
+  // The creator automatically becomes a member of their own chat.
   const { error: memberError } = await supabaseAdmin
     .from("chat_members")
     .insert({
@@ -95,14 +83,8 @@ export default async function handler(req, res) {
   if (memberError) {
     console.error("Add chat member error:", memberError);
 
-    // Remove the chat if adding its creator as a member failed.
-    await supabaseAdmin
-      .from("chats")
-      .delete()
-      .eq("id", chat.id);
-
     return res.status(500).json({
-      error: "Chat was created but could not add you as a member.",
+      error: "Chat was created, but the member could not be added.",
     });
   }
 

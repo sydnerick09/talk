@@ -1,164 +1,476 @@
+
 -- ============================================================================
 -- Simple Realtime Chat — Supabase schema
--- Run this in: Supabase Dashboard > SQL Editor > New query > Run
+-- Updated / migration-safe version
+-- ============================================================================
+--
+-- This version is designed to work with an existing database.
+-- It does NOT delete existing tables.
+--
+-- IMPORTANT:
+-- If an old messages table already exists without chat_id, this script adds
+-- chat_id instead of failing with:
+-- ERROR: 42703: column "chat_id" does not exist
 -- ============================================================================
 
--- Needed for gen_random_uuid()
+
+-- ============================================================================
+-- EXTENSIONS
+-- ============================================================================
+
 create extension if not exists pgcrypto;
 
--- ----------------------------------------------------------------------------
--- users
--- Our own users table. We do NOT use Supabase Auth — the app has its own
--- simple username/password login (see lib/session.js), so this table stores
--- everything we need about a registered person.
--- ----------------------------------------------------------------------------
-create table if not exists users (
+
+-- ============================================================================
+-- USERS
+-- ============================================================================
+
+create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
+
   name text not null,
+
   username text not null unique,
+
   password_hash text not null,
+
   created_at timestamptz not null default now(),
+
   last_active timestamptz not null default now()
 );
 
--- ----------------------------------------------------------------------------
--- chats
--- chat_token is the long random string used in the shareable link
--- e.g. /chat/8fK92LmQxP7a  — it must be unique and hard to guess.
--- ----------------------------------------------------------------------------
-create table if not exists chats (
+
+-- ============================================================================
+-- USERS — MIGRATIONS
+-- ============================================================================
+
+alter table public.users
+  add column if not exists name text;
+
+alter table public.users
+  add column if not exists username text;
+
+alter table public.users
+  add column if not exists password_hash text;
+
+alter table public.users
+  add column if not exists created_at timestamptz not null default now();
+
+alter table public.users
+  add column if not exists last_active timestamptz not null default now();
+
+
+-- ============================================================================
+-- CHATS
+-- ============================================================================
+
+create table if not exists public.chats (
   id uuid primary key default gen_random_uuid(),
+
   chat_token text not null unique,
-  created_by uuid not null references users(id) on delete cascade,
+
+  created_by uuid not null
+    references public.users(id)
+    on delete cascade,
+
   created_at timestamptz not null default now(),
+
   last_activity timestamptz not null default now(),
-  -- shared_token is the public link token; each visitor gets a separate private chat.
+
   shared_token text,
+
   is_inbox boolean not null default false
 );
 
--- ----------------------------------------------------------------------------
--- chat_members
--- Tracks who has joined which chat. A user "joins" automatically the first
--- time they open a valid chat link while logged in.
--- ----------------------------------------------------------------------------
-create table if not exists chat_members (
+
+-- ============================================================================
+-- CHATS — MIGRATIONS
+-- ============================================================================
+
+alter table public.chats
+  add column if not exists chat_token text;
+
+alter table public.chats
+  add column if not exists created_by uuid;
+
+alter table public.chats
+  add column if not exists created_at timestamptz not null default now();
+
+alter table public.chats
+  add column if not exists last_activity timestamptz not null default now();
+
+alter table public.chats
+  add column if not exists shared_token text;
+
+alter table public.chats
+  add column if not exists is_inbox boolean not null default false;
+
+
+-- ============================================================================
+-- CHAT TOKEN INDEX
+-- ============================================================================
+
+create unique index if not exists idx_chats_chat_token_unique
+on public.chats(chat_token)
+where chat_token is not null;
+
+
+-- ============================================================================
+-- EXISTING CHATS
+-- ============================================================================
+--
+-- Existing chats that do not have a shared token will use their chat token.
+-- ============================================================================
+
+update public.chats
+set shared_token = chat_token
+where shared_token is null
+  and chat_token is not null;
+
+
+update public.chats
+set is_inbox = true
+where shared_token = chat_token
+  and is_inbox = false;
+
+
+-- ============================================================================
+-- SHARED CHAT INDEX
+-- ============================================================================
+
+create index if not exists idx_chats_shared_token
+on public.chats(shared_token);
+
+
+-- ============================================================================
+-- CHAT MEMBERS
+-- ============================================================================
+
+create table if not exists public.chat_members (
   id uuid primary key default gen_random_uuid(),
-  chat_id uuid not null references chats(id) on delete cascade,
-  user_id uuid not null references users(id) on delete cascade,
+
+  chat_id uuid not null
+    references public.chats(id)
+    on delete cascade,
+
+  user_id uuid not null
+    references public.users(id)
+    on delete cascade,
+
   joined_at timestamptz not null default now(),
+
   unique (chat_id, user_id)
 );
 
--- ----------------------------------------------------------------------------
--- messages
--- Text and/or a file can be attached to one message.
--- ----------------------------------------------------------------------------
-create table if not exists messages (
+
+-- ============================================================================
+-- CHAT MEMBERS — MIGRATIONS
+-- ============================================================================
+
+alter table public.chat_members
+  add column if not exists chat_id uuid;
+
+alter table public.chat_members
+  add column if not exists user_id uuid;
+
+alter table public.chat_members
+  add column if not exists joined_at timestamptz not null default now();
+
+
+-- ============================================================================
+-- CHAT MEMBERS INDEXES
+-- ============================================================================
+
+create index if not exists idx_chat_members_chat_id
+on public.chat_members(chat_id);
+
+create index if not exists idx_chat_members_user_id
+on public.chat_members(user_id);
+
+
+-- ============================================================================
+-- MESSAGES
+-- ============================================================================
+
+create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
-  chat_id uuid not null references chats(id) on delete cascade,
-  sender_id uuid not null references users(id) on delete cascade,
+
+  chat_id uuid not null
+    references public.chats(id)
+    on delete cascade,
+
+  sender_id uuid not null
+    references public.users(id)
+    on delete cascade,
+
   message text,
+
   file_url text,
+
   file_name text,
+
   file_type text,
+
   file_size bigint,
+
   created_at timestamptz not null default now()
 );
 
--- Helpful indexes
-create index if not exists idx_messages_chat_id on messages(chat_id);
-create index if not exists idx_messages_created_at on messages(created_at);
-create index if not exists idx_chat_members_chat_id on chat_members(chat_id);
-create index if not exists idx_chat_members_user_id on chat_members(user_id);
-
--- Migration for existing installations: old chat links become shared inbox links.
-alter table chats add column if not exists shared_token text;
-alter table chats add column if not exists is_inbox boolean not null default false;
-update chats set shared_token = chat_token where shared_token is null;
-update chats set is_inbox = true where is_inbox = false and shared_token = chat_token;
-
-create index if not exists idx_chats_shared_token on chats(shared_token);
 
 -- ============================================================================
--- Row Level Security (RLS)
+-- MESSAGES — IMPORTANT MIGRATIONS
 -- ============================================================================
--- This app uses its OWN login system (bcrypt + a signed cookie), not Supabase
--- Auth. That means Supabase has no built-in idea of "who is logged in" for
--- RLS to check with auth.uid().
 --
--- So the app splits responsibilities like this:
---   1. All WRITES (register, login, create chat, join chat, send message,
---      upload file) go through Next.js API routes that use the SECRET
---      service role key. The service role key bypasses RLS completely, and
---      every one of those API routes checks the user's session + chat
---      membership itself before touching the database. The anon key (used
---      in the browser) is never allowed to write.
---   2. READS for realtime updates happen straight from the browser using the
---      public anon key, filtered by a specific chat_id. That's what lets
---      new messages appear instantly. To make that possible, SELECT is
---      allowed for the anon key, and the chat's protection comes from the
---      chat_token being a long, random, hard-to-guess value (like a Google
---      Meet link) — exactly as requested in the project spec. Initial page
---      loads for a chat also re-check membership server-side before
---      rendering anything.
+-- This is the main fix for:
 --
--- If you need stricter per-user database-level security later, the
--- recommended upgrade path is to switch to Supabase Auth so RLS policies
--- can check auth.uid() directly.
+-- ERROR: 42703: column "chat_id" does not exist
+--
+-- If messages already existed from an older schema, CREATE TABLE IF NOT EXISTS
+-- does nothing. Therefore we explicitly add missing columns here.
 -- ============================================================================
 
-alter table users enable row level security;
-alter table chats enable row level security;
-alter table chat_members enable row level security;
-alter table messages enable row level security;
+alter table public.messages
+  add column if not exists chat_id uuid;
 
--- No direct anon access to the users table at all (protects password hashes
--- and personal info). All user data the app needs is served through API
--- routes using the service role key.
-drop policy if exists "no anon access to users" on users;
-create policy "no anon access to users" on users
-  for all
-  using (false);
+alter table public.messages
+  add column if not exists sender_id uuid;
 
--- Anyone with the anon key can read chats/members/messages (needed for
--- Supabase Realtime to deliver updates to the browser). Writes are blocked
--- for anon; only the service role (used by our API routes) can write.
-drop policy if exists "anon can read chats" on chats;
-create policy "anon can read chats" on chats
-  for select
-  using (true);
+alter table public.messages
+  add column if not exists message text;
 
-drop policy if exists "anon can read chat_members" on chat_members;
-create policy "anon can read chat_members" on chat_members
-  for select
-  using (true);
+alter table public.messages
+  add column if not exists file_url text;
 
-drop policy if exists "anon can read messages" on messages;
-create policy "anon can read messages" on messages
-  for select
-  using (true);
+alter table public.messages
+  add column if not exists file_name text;
+
+alter table public.messages
+  add column if not exists file_type text;
+
+alter table public.messages
+  add column if not exists file_size bigint;
+
+alter table public.messages
+  add column if not exists created_at timestamptz not null default now();
+
 
 -- ============================================================================
--- Realtime
--- Enable Realtime on the messages table so new rows are pushed to clients.
--- (Also doable from Dashboard > Database > Replication.)
+-- MESSAGES INDEXES
 -- ============================================================================
-alter publication supabase_realtime add table messages;
+
+create index if not exists idx_messages_chat_id
+on public.messages(chat_id);
+
+create index if not exists idx_messages_created_at
+on public.messages(created_at);
+
 
 -- ============================================================================
--- Storage bucket for uploaded files
--- Run once. If it already exists, this will error harmlessly — that's fine.
+-- CHAT / MESSAGE INDEXES
 -- ============================================================================
-insert into storage.buckets (id, name, public)
-values ('chat-files', 'chat-files', true)
+
+create index if not exists idx_chats_created_by
+on public.chats(created_by);
+
+
+-- ============================================================================
+-- FOREIGN KEY FOR MESSAGES.CHAT_ID
+-- ============================================================================
+--
+-- Add the relationship only if it does not already exist.
+-- ============================================================================
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'messages_chat_id_fkey'
+      and conrelid = 'public.messages'::regclass
+  ) then
+
+    alter table public.messages
+      add constraint messages_chat_id_fkey
+      foreign key (chat_id)
+      references public.chats(id)
+      on delete cascade;
+
+  end if;
+end
+$$;
+
+
+-- ============================================================================
+-- FOREIGN KEY FOR CHAT MEMBERS
+-- ============================================================================
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chat_members_chat_id_fkey'
+      and conrelid = 'public.chat_members'::regclass
+  ) then
+
+    alter table public.chat_members
+      add constraint chat_members_chat_id_fkey
+      foreign key (chat_id)
+      references public.chats(id)
+      on delete cascade;
+
+  end if;
+end
+$$;
+
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chat_members_user_id_fkey'
+      and conrelid = 'public.chat_members'::regclass
+  ) then
+
+    alter table public.chat_members
+      add constraint chat_members_user_id_fkey
+      foreign key (user_id)
+      references public.users(id)
+      on delete cascade;
+
+  end if;
+end
+$$;
+
+
+-- ============================================================================
+-- ROW LEVEL SECURITY
+-- ============================================================================
+
+alter table public.users enable row level security;
+
+alter table public.chats enable row level security;
+
+alter table public.chat_members enable row level security;
+
+alter table public.messages enable row level security;
+
+
+-- ============================================================================
+-- USERS SECURITY
+-- ============================================================================
+
+drop policy if exists "no anon access to users"
+on public.users;
+
+create policy "no anon access to users"
+on public.users
+for all
+using (false);
+
+
+-- ============================================================================
+-- CHATS SECURITY
+-- ============================================================================
+
+drop policy if exists "anon can read chats"
+on public.chats;
+
+create policy "anon can read chats"
+on public.chats
+for select
+using (true);
+
+
+-- ============================================================================
+-- CHAT MEMBERS SECURITY
+-- ============================================================================
+
+drop policy if exists "anon can read chat_members"
+on public.chat_members;
+
+create policy "anon can read chat_members"
+on public.chat_members
+for select
+using (true);
+
+
+-- ============================================================================
+-- MESSAGES SECURITY
+-- ============================================================================
+
+drop policy if exists "anon can read messages"
+on public.messages;
+
+create policy "anon can read messages"
+on public.messages
+for select
+using (true);
+
+
+-- ============================================================================
+-- REALTIME
+-- ============================================================================
+
+do $$
+begin
+
+  begin
+    alter publication supabase_realtime
+      add table public.messages;
+  exception
+    when duplicate_object then
+      null;
+  end;
+
+end
+$$;
+
+
+-- ============================================================================
+-- STORAGE BUCKET
+-- ============================================================================
+
+insert into storage.buckets (
+  id,
+  name,
+  public
+)
+values (
+  'chat-files',
+  'chat-files',
+  true
+)
 on conflict (id) do nothing;
 
--- Allow public read of files (bucket is public, so files are viewable via
--- their URL, e.g. for image previews and downloads). Uploads/deletes happen
--- only through our API routes using the service role key, which bypasses
--- storage RLS, so no anon insert/update/delete policy is created.
-drop policy if exists "public read chat files" on storage.objects;
-create policy "public read chat files" on storage.objects
-  for select
-  using (bucket_id = 'chat-files');
+
+-- ============================================================================
+-- STORAGE READ POLICY
+-- ============================================================================
+
+drop policy if exists "public read chat files"
+on storage.objects;
+
+create policy "public read chat files"
+on storage.objects
+for select
+using (
+  bucket_id = 'chat-files'
+);
+
+
+-- ============================================================================
+-- DONE
+-- ============================================================================
+--
+-- Main fix:
+--
+--   ALTER TABLE public.messages
+--   ADD COLUMN IF NOT EXISTS chat_id uuid;
+--
+-- This allows an existing messages table to receive the missing chat_id
+-- column instead of causing ERROR 42703.
+--
+-- ============================================================================
+
