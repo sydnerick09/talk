@@ -37,7 +37,7 @@ export default async function handler(req, res) {
 
   const { data: chat, error } = await supabaseAdmin
     .from("chats")
-    .insert({ chat_token: chatToken, created_by: userId })
+    .insert({ chat_token: chatToken, shared_token: chatToken, is_inbox: true, created_by: userId })
     .select("id, chat_token")
     .single();
 

@@ -37,13 +37,13 @@ export async function getServerSideProps({ req }) {
   const { data: memberships } = await supabaseAdmin
     .from("chat_members")
     .select(
-      "chat_id, chats(id, chat_token, last_activity, chat_members(user_id, users(name)))"
+      "chat_id, chats(id, chat_token, last_activity, is_inbox, chat_members(user_id, users(name)))"
     )
     .eq("user_id", userId);
 
   const chats = (memberships || [])
     .map((m) => m.chats)
-    .filter(Boolean)
+    .filter((c) => c && !c.is_inbox)
     .map((c) => {
       const others = (c.chat_members || [])
         .map((cm) => cm.users?.name)

@@ -31,7 +31,10 @@ create table if not exists chats (
   chat_token text not null unique,
   created_by uuid not null references users(id) on delete cascade,
   created_at timestamptz not null default now(),
-  last_activity timestamptz not null default now()
+  last_activity timestamptz not null default now(),
+  -- shared_token is the public link token; each visitor gets a separate private chat.
+  shared_token text,
+  is_inbox boolean not null default false
 );
 
 -- ----------------------------------------------------------------------------
@@ -68,6 +71,14 @@ create index if not exists idx_messages_chat_id on messages(chat_id);
 create index if not exists idx_messages_created_at on messages(created_at);
 create index if not exists idx_chat_members_chat_id on chat_members(chat_id);
 create index if not exists idx_chat_members_user_id on chat_members(user_id);
+
+-- Migration for existing installations: old chat links become shared inbox links.
+alter table chats add column if not exists shared_token text;
+alter table chats add column if not exists is_inbox boolean not null default false;
+update chats set shared_token = chat_token where shared_token is null;
+update chats set is_inbox = true where is_inbox = false and shared_token = chat_token;
+
+create index if not exists idx_chats_shared_token on chats(shared_token);
 
 -- ============================================================================
 -- Row Level Security (RLS)
