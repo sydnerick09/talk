@@ -104,17 +104,28 @@ export default function ChatConversationPage({
   const router = useRouter();
   const [messages, setMessages] = useState(initialMessages);
   const [text, setText] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pendingFile, setPendingFile] = useState(null); // { file, previewUrl }
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [onlineUsers, setOnlineUsers] = useState({});
+  const [typingUserIds, setTypingUserIds] = useState({});
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
+  const typingTimerRef = useRef(null);
+  const presenceChannelRef = useRef(null);
+  const composerInputRef = useRef(null);
 
   const otherParticipants = participants.filter((p) => p.id !== me.id);
   const headerName =
-    otherParticipants.map((p) => p.name).join(", ") || "Waiting for someone to join...";
+    otherParticipants.map((p) => p.name).join(", ") || "Chat";
+  const typingNames = otherParticipants
+    .filter((p) => typingUserIds[p.id])
+    .map((p) => p.name)
+    .join(", ");
+  const otherOnline = otherParticipants.some((p) => onlineUsers[p.id]);
 
-  // --- Realtime: listen for new messages in this chat and add them live ---
+  // --- Realtime: messages, online/offline status, and typing ---
   useEffect(() => {
     const channel = supabase
       .channel(`chat-${chatId}`)
@@ -128,18 +139,42 @@ export default function ChatConversationPage({
         },
         (payload) => {
           setMessages((prev) => {
-            // Avoid duplicates if we already added it optimistically.
             if (prev.some((m) => m.id === payload.new.id)) return prev;
             return [...prev, payload.new];
           });
         }
       )
-      .subscribe();
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState();
+        setOnlineUsers(
+          Object.keys(state).reduce((online, userId) => {
+            online[userId] = true;
+            return online;
+          }, {})
+        );
+      })
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        if (!payload || payload.user_id === me.id) return;
+
+        setTypingUserIds((prev) => ({
+          ...prev,
+          [payload.user_id]: Boolean(payload.typing),
+        }));
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await channel.track({ user_id: me.id });
+        }
+      });
+
+    presenceChannelRef.current = channel;
 
     return () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
       supabase.removeChannel(channel);
+      presenceChannelRef.current = null;
     };
-  }, [chatId]);
+  }, [chatId, me.id]);
 
   // --- Auto-scroll to the latest message ---
   useEffect(() => {
@@ -152,6 +187,53 @@ export default function ChatConversationPage({
     if (senderId === me.id) return me.name;
     const p = participants.find((p) => p.id === senderId);
     return p ? p.name : "Someone";
+  }
+
+  function broadcastTyping(typing) {
+    const channel = presenceChannelRef.current;
+    if (!channel) return;
+
+    channel.send({
+      type: "broadcast",
+      event: "typing",
+      payload: { user_id: me.id, typing },
+    });
+  }
+
+  function handleTextChange(e) {
+    const value = e.target.value;
+    setText(value);
+
+    if (!value.trim()) {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      broadcastTyping(false);
+      return;
+    }
+
+    broadcastTyping(true);
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => {
+      broadcastTyping(false);
+    }, 1200);
+  }
+
+  const emojis = [
+    "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
+    "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰",
+    "😘", "😗", "😎", "🤩", "🤔", "😐", "😴", "😭",
+    "😡", "😱", "👍", "👎", "👏", "🙏", "❤️", "🔥",
+    "🎉", "💯", "😂", "🙌", "💔", "✨", "✅", "❌"
+  ];
+
+  function addEmoji(emoji) {
+    setText((current) => `${current}${emoji}`);
+    setShowEmojiPicker(false);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
+  function handleComposerBlur() {
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    broadcastTyping(false);
   }
 
   function handleFileChoose(e) {
@@ -240,9 +322,13 @@ export default function ChatConversationPage({
         return;
       }
 
-      // Show it immediately (realtime will also deliver it, but the
-      // dedupe check in the effect above prevents a duplicate).
-      setMessages((prev) => [...prev, data.message]);
+      // Show it immediately, but never add the same message twice if
+      // Supabase Realtime already delivered it.
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === data.message.id)) return prev;
+        return [...prev, data.message];
+      });
+      broadcastTyping(false);
       setText("");
       setPendingFile(null);
     } catch (err) {
@@ -254,6 +340,7 @@ export default function ChatConversationPage({
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      handleComposerBlur();
       handleSend();
     }
   }
@@ -265,7 +352,13 @@ export default function ChatConversationPage({
           <ArrowLeft size={20} />
         </button>
         <div className="avatar">{headerName.charAt(0).toUpperCase()}</div>
-        <div className="title">{headerName}</div>
+        <div className="chat-header-info">
+          <div className="title">{headerName}</div>
+          <div className={`presence-status ${otherOnline ? "online" : "offline"}`}>
+            {otherOnline ? "Online" : "Offline"}
+          </div>
+          {typingNames && <div className="typing-status">{typingNames} is typing...</div>}
+        </div>
       </div>
 
       <div className="messages-area" ref={scrollRef}>
@@ -306,6 +399,23 @@ export default function ChatConversationPage({
 
       {error && <p className="error-text" style={{ padding: "0 12px" }}>{error}</p>}
 
+      {showEmojiPicker && (
+        <div className="emoji-picker">
+          {emojis.map((emoji, index) => (
+            <button
+              key={`${emoji}-${index}`}
+              type="button"
+              className="emoji-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => addEmoji(emoji)}
+              aria-label={`Insert ${emoji}`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="composer">
         <input
           type="file"
@@ -315,17 +425,30 @@ export default function ChatConversationPage({
           accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt"
         />
         <button
+          className="btn-icon emoji-toggle"
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setShowEmojiPicker((open) => !open)}
+          title="Emoji"
+          aria-label="Emoji"
+        >
+          😊
+        </button>
+        <button
           className="btn-icon"
+          type="button"
           onClick={() => fileInputRef.current.click()}
           title="Attach a file"
         >
           <Paperclip size={20} />
         </button>
         <input
+          ref={composerInputRef}
           type="text"
           placeholder="Type a message..."
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={handleTextChange}
+          onBlur={handleComposerBlur}
           onKeyDown={handleKeyDown}
         />
         <button
