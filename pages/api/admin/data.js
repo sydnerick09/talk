@@ -1,9 +1,7 @@
 // GET /api/admin/data
-// Returns everything the admin dashboard needs: users, chats (with
-// participants), and messages. Supports a simple ?search= query that
-// filters users and chats by name/username.
-//
-// Passwords / password hashes are NEVER included in this response.
+// Returns the admin dashboard data without relying on Supabase's nested
+// relationship syntax. This keeps the panel working even when an existing
+// database has differently named foreign-key constraints.
 import { isAdminRequest } from "../../../lib/adminSession";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin";
 
@@ -18,76 +16,117 @@ export default async function handler(req, res) {
 
   const search = (req.query.search || "").toString().trim().toLowerCase();
 
-  // --- Users (never select password_hash) ---
-  let usersQuery = supabaseAdmin
-    .from("users")
-    .select("id, name, username, created_at, last_active")
-    .order("created_at", { ascending: false });
+  // Load the base tables independently. The service-role client is used here,
+  // so the admin panel can always see the complete conversation history.
+  const [usersResult, chatsResult, membersResult, messagesResult] =
+    await Promise.all([
+      supabaseAdmin
+        .from("users")
+        .select("id, name, username, created_at, last_active")
+        .order("created_at", { ascending: false }),
+      supabaseAdmin
+        .from("chats")
+        .select("id, chat_token, created_at, last_activity, created_by")
+        .order("last_activity", { ascending: false }),
+      supabaseAdmin
+        .from("chat_members")
+        .select("chat_id, user_id"),
+      supabaseAdmin
+        .from("messages")
+        .select(
+          "id, chat_id, sender_id, message, file_name, file_type, file_size, file_url, created_at"
+        )
+        .order("created_at", { ascending: false })
+        .limit(500),
+    ]);
 
-  if (search) {
-    usersQuery = usersQuery.or(
-      `name.ilike.%${search}%,username.ilike.%${search}%`
-    );
+  const firstError =
+    usersResult.error ||
+    chatsResult.error ||
+    membersResult.error ||
+    messagesResult.error;
+
+  if (firstError) {
+    console.error("Admin data error:", firstError);
+    return res.status(500).json({
+      error: "Could not load admin data.",
+      detail: process.env.NODE_ENV === "development" ? firstError.message : undefined,
+    });
   }
 
-  const { data: users, error: usersError } = await usersQuery;
+  const users = usersResult.data || [];
+  const chats = chatsResult.data || [];
+  const members = membersResult.data || [];
+  const messages = messagesResult.data || [];
 
-  // --- Chats + their members' names/usernames ---
-  const { data: chats, error: chatsError } = await supabaseAdmin
-    .from("chats")
-    .select(
-      "id, chat_token, created_at, last_activity, chat_members(user_id, users(name, username))"
-    )
-    .order("created_at", { ascending: false });
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  const chatsById = new Map(chats.map((chat) => [chat.id, chat]));
 
-  // --- Messages, with sender name and which chat they belong to ---
-  const { data: messages, error: messagesError } = await supabaseAdmin
-    .from("messages")
-    .select(
-      "id, message, file_name, file_type, file_size, file_url, created_at, chat_id, chats(chat_token), users!messages_sender_id_fkey(name, username)"
-    )
-    .order("created_at", { ascending: false })
-    .limit(500);
+  const participantsByChat = new Map();
+  for (const member of members) {
+    const user = usersById.get(member.user_id);
+    if (!user) continue;
 
-  if (usersError || chatsError || messagesError) {
-    console.error(usersError || chatsError || messagesError);
-    return res.status(500).json({ error: "Could not load admin data." });
+    const list = participantsByChat.get(member.chat_id) || [];
+    list.push({
+      id: user.id,
+      name: user.name,
+      username: user.username,
+    });
+    participantsByChat.set(member.chat_id, list);
   }
 
-  // Reshape chats to a simpler participants list for the frontend.
-  const shapedChats = (chats || []).map((c) => ({
-    id: c.id,
-    chatToken: c.chat_token,
-    createdAt: c.created_at,
-    lastActivity: c.last_activity,
-    participants: (c.chat_members || []).map((m) => m.users?.name).filter(Boolean),
-  }));
+  const shapedUsers = search
+    ? users.filter(
+        (user) =>
+          String(user.name || "").toLowerCase().includes(search) ||
+          String(user.username || "").toLowerCase().includes(search)
+      )
+    : users;
 
-  let filteredChats = shapedChats;
-  if (search) {
-    filteredChats = shapedChats.filter(
-      (c) =>
-        c.chatToken.toLowerCase().includes(search) ||
-        c.participants.some((p) => p.toLowerCase().includes(search))
-    );
-  }
+  const shapedChats = chats
+    .map((chat) => ({
+      id: chat.id,
+      chatToken: chat.chat_token,
+      createdAt: chat.created_at,
+      lastActivity: chat.last_activity,
+      participants: participantsByChat.get(chat.id) || [],
+    }))
+    .filter((chat) => {
+      if (!search) return true;
 
-  const shapedMessages = (messages || []).map((m) => ({
-    id: m.id,
-    message: m.message,
-    fileName: m.file_name,
-    fileType: m.file_type,
-    fileSize: m.file_size,
-    fileUrl: m.file_url,
-    createdAt: m.created_at,
-    chatToken: m.chats?.chat_token,
-    senderName: m.users?.name,
-    senderUsername: m.users?.username,
-  }));
+      return (
+        String(chat.chatToken || "").toLowerCase().includes(search) ||
+        chat.participants.some(
+          (participant) =>
+            String(participant.name || "").toLowerCase().includes(search) ||
+            String(participant.username || "").toLowerCase().includes(search)
+        )
+      );
+    });
+
+  const shapedMessages = messages.map((message) => {
+    const sender = usersById.get(message.sender_id);
+    const chat = chatsById.get(message.chat_id);
+
+    return {
+      id: message.id,
+      chatId: message.chat_id,
+      message: message.message,
+      fileName: message.file_name,
+      fileType: message.file_type,
+      fileSize: message.file_size,
+      fileUrl: message.file_url,
+      createdAt: message.created_at,
+      chatToken: chat?.chat_token || "Unknown chat",
+      senderName: sender?.name || "Unknown user",
+      senderUsername: sender?.username || "unknown",
+    };
+  });
 
   return res.status(200).json({
-    users: users || [],
-    chats: filteredChats,
+    users: shapedUsers,
+    chats: shapedChats,
     messages: shapedMessages,
   });
 }

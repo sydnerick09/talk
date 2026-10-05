@@ -1,7 +1,5 @@
-
 // POST /api/chats/create
-// Creates a new chat with a secure random link and makes the creator its
-// first member.
+// Creates a new shared chat link and makes the creator its first member.
 
 import { getUserIdFromRequest } from "../../../lib/session";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -9,70 +7,55 @@ import { generateChatToken } from "../../../lib/generateToken";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Method not allowed",
-    });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   const userId = getUserIdFromRequest(req);
 
   if (!userId) {
-    return res.status(401).json({
-      error: "Please log in first.",
-    });
+    return res.status(401).json({ error: "Please log in first." });
   }
 
-  // Generate a token and make sure it isn't already used.
-  let chatToken;
+  let chat = null;
+  let lastError = null;
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = generateChatToken(12);
+  // Generate and insert the token atomically. The old code checked first and
+  // inserted later, which still allowed a rare duplicate-token race.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const chatToken = generateChatToken(12);
 
-    const { data: existing, error: checkError } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from("chats")
-      .select("id")
-      .eq("chat_token", candidate)
-      .maybeSingle();
+      .insert({
+        chat_token: chatToken,
+        shared_token: chatToken,
+        is_inbox: true,
+        created_by: userId,
+      })
+      .select("id, chat_token")
+      .single();
 
-    if (checkError) {
-      console.error("Chat token check error:", checkError);
-
-      return res.status(500).json({
-        error: "Could not check chat link. Try again.",
-      });
+    if (!error) {
+      chat = data;
+      break;
     }
 
-    if (!existing) {
-      chatToken = candidate;
+    lastError = error;
+
+    // A unique-token collision is safe to retry with another token.
+    if (error.code !== "23505") {
       break;
     }
   }
 
-  if (!chatToken) {
+  if (!chat) {
+    console.error("Create chat error:", lastError);
     return res.status(500).json({
-      error: "Could not generate a chat link. Try again.",
+      error: "Could not create chat. Please try again.",
     });
   }
 
-  // Create the chat using the basic columns.
-  const { data: chat, error } = await supabaseAdmin
-    .from("chats")
-    .insert({
-      chat_token: chatToken,
-      created_by: userId,
-    })
-    .select("id, chat_token")
-    .single();
-
-  if (error) {
-    console.error("Create chat error:", error);
-
-    return res.status(500).json({
-      error: "Could not create chat.",
-    });
-  }
-
-  // The creator automatically becomes a member of their own chat.
+  // The creator automatically becomes a member of their own shared inbox.
   const { error: memberError } = await supabaseAdmin
     .from("chat_members")
     .insert({
@@ -83,8 +66,11 @@ export default async function handler(req, res) {
   if (memberError) {
     console.error("Add chat member error:", memberError);
 
+    // Do not leave an unusable chat behind if membership creation fails.
+    await supabaseAdmin.from("chats").delete().eq("id", chat.id);
+
     return res.status(500).json({
-      error: "Chat was created, but the member could not be added.",
+      error: "Chat could not be completed. Please try again.",
     });
   }
 
@@ -92,4 +78,3 @@ export default async function handler(req, res) {
     chatToken: chat.chat_token,
   });
 }
-
