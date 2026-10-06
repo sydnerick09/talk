@@ -6,8 +6,8 @@ import {
   Search,
   Users,
   MessageSquare,
-  FileText,
   LogOut,
+  RefreshCw,
 } from "lucide-react";
 import { isAdminRequest } from "../../lib/adminSession";
 import { formatFileSize } from "../../lib/fileValidation";
@@ -77,7 +77,8 @@ function AdminLogin() {
           </button>
         </form>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -110,6 +111,10 @@ function AdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
+  async function handleRefresh() {
+    await loadData(search);
+  }
+
   async function handleLogout() {
     await fetch("/api/admin/logout", { method: "POST" });
     window.location.href = "/admin";
@@ -133,15 +138,31 @@ function AdminDashboard() {
     : [];
 
   return (
-    <div className="admin-page">
+    <>
+      <style jsx>{`
+        .spin { animation: admin-spin 0.8s linear infinite; }
+        @keyframes admin-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
+      <div className="admin-page">
       <div className="admin-header">
         <div className="brand">
           <ShieldCheck size={22} color="#16a34a" />
           <span>Admin Panel</span>
         </div>
-        <button className="btn-icon" onClick={handleLogout} title="Log out">
-          <LogOut size={20} />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            className="btn-icon"
+            onClick={handleRefresh}
+            title="Refresh admin panel"
+            aria-label="Refresh admin panel"
+            disabled={loading}
+          >
+            <RefreshCw size={20} className={loading ? "spin" : ""} />
+          </button>
+          <button className="btn-icon" onClick={handleLogout} title="Log out" aria-label="Log out">
+            <LogOut size={20} />
+          </button>
+        </div>
       </div>
 
       <div className="admin-search-wrap" style={{ marginBottom: 24 }}>
@@ -273,7 +294,17 @@ function AdminDashboard() {
                           </div>
                         </div>
 
-                        <div style={{ padding: 14, display: "grid", gap: 10 }}>
+                        <div
+                          style={{
+                            padding: 14,
+                            display: "grid",
+                            gap: 10,
+                            maxHeight: 560,
+                            overflowY: "auto",
+                            overflowX: "hidden",
+                            overscrollBehavior: "contain",
+                          }}
+                        >
                           {chatMessages.length === 0 ? (
                             <p className="empty-state">No messages in this conversation.</p>
                           ) : (
@@ -319,77 +350,9 @@ function AdminDashboard() {
             </section>
           )}
 
-          <section className="admin-section">
-            <h2>
-              <MessageSquare size={18} color="#16a34a" /> Conversations (
-              {data.chats.length})
-            </h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Chat ID</th>
-                  <th>Participants</th>
-                  <th>Created</th>
-                  <th>Last Activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.chats.map((c) => (
-                  <tr key={c.id}>
-                    <td>{c.chatToken}</td>
-                    <td>{c.participants.join(", ") || "—"}</td>
-                    <td>{new Date(c.createdAt).toLocaleString()}</td>
-                    <td>{new Date(c.lastActivity).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {data.chats.length === 0 && (
-              <p className="empty-state">No conversations found.</p>
-            )}
-          </section>
-
-          <section className="admin-section">
-            <h2>
-              <FileText size={18} color="#16a34a" /> Messages (
-              {data.messages.length})
-            </h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Sender</th>
-                  <th>Chat</th>
-                  <th>Message</th>
-                  <th>Attached File</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.messages.map((m) => (
-                  <tr key={m.id}>
-                    <td>{m.senderName} (@{m.senderUsername})</td>
-                    <td>{m.chatToken}</td>
-                    <td>{m.message || "—"}</td>
-                    <td>
-                      {m.fileName ? (
-                        <a href={m.fileUrl} target="_blank" rel="noopener noreferrer">
-                          {m.fileName} ({formatFileSize(m.fileSize || 0)})
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td>{new Date(m.createdAt).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {data.messages.length === 0 && (
-              <p className="empty-state">No messages found.</p>
-            )}
-          </section>
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }
