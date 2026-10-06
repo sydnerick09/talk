@@ -85,6 +85,7 @@ function AdminDashboard() {
   const [data, setData] = useState({ users: [], chats: [], messages: [] });
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [selectedUser, setSelectedUser] = useState(null);
 
   async function loadData(searchTerm = "") {
     setLoading(true);
@@ -113,6 +114,23 @@ function AdminDashboard() {
     await fetch("/api/admin/logout", { method: "POST" });
     window.location.href = "/admin";
   }
+
+  // The admin API already returns the complete conversation history. Build the
+  // selected client's view locally so clicking a registered client never
+  // requires the search box. We include every message in conversations that
+  // the client belongs to, not only messages sent by that client.
+  const selectedClientChats = selectedUser
+    ? data.chats.filter((chat) =>
+        chat.participants.some((participant) => participant.id === selectedUser.id)
+      )
+    : [];
+
+  const selectedClientChatIds = new Set(selectedClientChats.map((chat) => chat.id));
+  const selectedClientMessages = selectedUser
+    ? data.messages
+        .filter((message) => selectedClientChatIds.has(message.chatId))
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    : [];
 
   return (
     <div className="admin-page">
@@ -156,8 +174,34 @@ function AdminDashboard() {
               </thead>
               <tbody>
                 {data.users.map((u) => (
-                  <tr key={u.id}>
-                    <td>{u.name}</td>
+                  <tr
+                    key={u.id}
+                    onClick={() => setSelectedUser(u)}
+                    style={{ cursor: "pointer" }}
+                    title={`View conversations for ${u.name || u.username}`}
+                  >
+                    <td>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedUser(u);
+                        }}
+                        style={{
+                          border: 0,
+                          background: "transparent",
+                          padding: 0,
+                          margin: 0,
+                          font: "inherit",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          color: "inherit",
+                          textAlign: "left",
+                        }}
+                      >
+                        {u.name}
+                      </button>
+                    </td>
                     <td>@{u.username}</td>
                     <td>{new Date(u.created_at).toLocaleString()}</td>
                     <td>{new Date(u.last_active).toLocaleString()}</td>
@@ -169,6 +213,111 @@ function AdminDashboard() {
               <p className="empty-state">No users found.</p>
             )}
           </section>
+
+          {selectedUser && (
+            <section className="admin-section" style={{ marginBottom: 24 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <div>
+                  <h2 style={{ marginBottom: 4 }}>
+                    <MessageSquare size={18} color="#16a34a" /> {selectedUser.name || selectedUser.username}'s Conversations
+                  </h2>
+                  <div style={{ color: "#64748b", fontSize: 14 }}>
+                    @{selectedUser.username} · {selectedClientChats.length} conversation{selectedClientChats.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={() => setSelectedUser(null)}
+                  title="Close conversation view"
+                  aria-label="Close conversation view"
+                >
+                  ×
+                </button>
+              </div>
+
+              {selectedClientChats.length === 0 ? (
+                <p className="empty-state">This client has no conversations yet.</p>
+              ) : (
+                <div style={{ display: "grid", gap: 18 }}>
+                  {selectedClientChats.map((chat) => {
+                    const chatMessages = selectedClientMessages.filter((message) => message.chatId === chat.id);
+                    return (
+                      <div
+                        key={chat.id}
+                        style={{
+                          border: "1px solid #e2e8f0",
+                          borderRadius: 12,
+                          overflow: "hidden",
+                          background: "#fff",
+                        }}
+                      >
+                        <div
+                          style={{
+                            padding: "12px 14px",
+                            borderBottom: "1px solid #e2e8f0",
+                            background: "#f8fafc",
+                          }}
+                        >
+                          <strong>{chat.participants.map((p) => p.name || `@${p.username}`).join(" ↔ ") || chat.chatToken}</strong>
+                          <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                            Chat ID: {chat.chatToken} · {chatMessages.length} message{chatMessages.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+
+                        <div style={{ padding: 14, display: "grid", gap: 10 }}>
+                          {chatMessages.length === 0 ? (
+                            <p className="empty-state">No messages in this conversation.</p>
+                          ) : (
+                            chatMessages.map((message) => (
+                              <div
+                                key={message.id}
+                                style={{
+                                  padding: "10px 12px",
+                                  borderRadius: 10,
+                                  background: message.senderUsername === selectedUser.username ? "#f0fdf4" : "#f8fafc",
+                                  border: "1px solid #e2e8f0",
+                                }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 5 }}>
+                                  <strong style={{ fontSize: 13 }}>
+                                    {message.senderName} (@{message.senderUsername})
+                                  </strong>
+                                  <span style={{ color: "#64748b", fontSize: 12, whiteSpace: "nowrap" }}>
+                                    {new Date(message.createdAt).toLocaleString()}
+                                  </span>
+                                </div>
+                                {message.message && (
+                                  <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                                    {message.message}
+                                  </div>
+                                )}
+                                {message.fileName && (
+                                  <div style={{ marginTop: message.message ? 8 : 0 }}>
+                                    <a href={message.fileUrl} target="_blank" rel="noopener noreferrer">
+                                      📎 {message.fileName} ({formatFileSize(message.fileSize || 0)})
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="admin-section">
             <h2>
