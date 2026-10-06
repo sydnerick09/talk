@@ -9,8 +9,8 @@ import {
   FileText,
   LogOut,
 } from "lucide-react";
-import { isAdminRequest } from "../lib/adminSession";
-import { formatFileSize } from "../lib/fileValidation";
+import { isAdminRequest } from "../../lib/adminSession";
+import { formatFileSize } from "../../lib/fileValidation";
 
 export async function getServerSideProps({ req }) {
   return { props: { loggedIn: isAdminRequest(req) } };
@@ -85,25 +85,36 @@ function AdminDashboard() {
   const [data, setData] = useState({ users: [], chats: [], messages: [] });
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
   const [selectedChatId, setSelectedChatId] = useState(null);
 
   async function loadData(searchTerm = "") {
     setLoading(true);
-    setLoadError("");
+
     try {
       const res = await fetch(
-      `/api/admin/data${searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : ""}`
-    );
-      const json = await res.json();
-      if (!res.ok) {
-        setLoadError(json.error || "Could not load admin data.");
-      } else {
+        `/api/admin/data${
+          searchTerm
+            ? `?search=${encodeURIComponent(searchTerm)}`
+            : ""
+        }`
+      );
+
+      if (res.ok) {
+        const json = await res.json();
         setData(json);
+
+        // Keep the open conversation if it still exists after a search.
+        if (
+          selectedChatId &&
+          !(json.chats || []).some(
+            (chat) => chat.id === selectedChatId
+          )
+        ) {
+          setSelectedChatId(null);
+        }
       }
     } catch (error) {
-      console.error("Admin data request failed:", error);
-      setLoadError("Could not connect to the admin data service.");
+      console.error("Load admin data error:", error);
     } finally {
       setLoading(false);
     }
@@ -113,7 +124,6 @@ function AdminDashboard() {
     loadData();
   }, []);
 
-  // Simple debounce on search
   useEffect(() => {
     const t = setTimeout(() => loadData(search), 350);
     return () => clearTimeout(t);
@@ -125,6 +135,42 @@ function AdminDashboard() {
     window.location.href = "/admin";
   }
 
+  const selectedChat =
+    data.chats.find((chat) => chat.id === selectedChatId) || null;
+
+  const selectedMessages = selectedChat
+    ? data.messages
+        .filter((message) => message.chatId === selectedChat.id)
+        .sort(
+          (a, b) =>
+            new Date(a.createdAt).getTime() -
+            new Date(b.createdAt).getTime()
+        )
+    : [];
+
+  function participantNames(chat) {
+    if (!chat?.participants?.length) return "—";
+
+    return chat.participants
+      .map(
+        (participant) =>
+          `${participant.name || "Unknown"}${
+            participant.username
+              ? ` (@${participant.username})`
+              : ""
+          }`
+      )
+      .join(", ");
+  }
+
+  function openConversation(chatId) {
+    setSelectedChatId(chatId);
+  }
+
+  function closeConversation() {
+    setSelectedChatId(null);
+  }
+
   return (
     <div className="admin-page">
       <div className="admin-header">
@@ -132,16 +178,24 @@ function AdminDashboard() {
           <ShieldCheck size={22} color="#16a34a" />
           <span>Admin Panel</span>
         </div>
-        <button className="btn-icon" onClick={handleLogout} title="Log out">
+
+        <button
+          className="btn-icon"
+          onClick={handleLogout}
+          title="Log out"
+        >
           <LogOut size={20} />
         </button>
       </div>
 
-      <div className="admin-search-wrap" style={{ marginBottom: 24 }}>
+      <div
+        className="admin-search-wrap"
+        style={{ marginBottom: 24 }}
+      >
         <Search size={16} />
         <input
           className="admin-search"
-          placeholder="Search users or chats..."
+          placeholder="Search users or conversations..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -149,20 +203,14 @@ function AdminDashboard() {
 
       {loading && <p className="empty-state">Loading...</p>}
 
-      {!loading && loadError && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <p className="error-text">{loadError}</p>
-          <button className="btn" onClick={() => loadData(search)}>Try Again</button>
-        </div>
-      )}
-
-      {!loading && !loadError && (
+      {!loading && (
         <>
           <section className="admin-section">
             <h2>
               <Users size={18} color="#16a34a" /> Registered Clients (
               {data.users.length})
             </h2>
+
             <table>
               <thead>
                 <tr>
@@ -172,17 +220,27 @@ function AdminDashboard() {
                   <th>Last Active</th>
                 </tr>
               </thead>
+
               <tbody>
                 {data.users.map((u) => (
                   <tr key={u.id}>
                     <td>{u.name}</td>
                     <td>@{u.username}</td>
-                    <td>{new Date(u.created_at).toLocaleString()}</td>
-                    <td>{new Date(u.last_active).toLocaleString()}</td>
+                    <td>
+                      {u.created_at
+                        ? new Date(u.created_at).toLocaleString()
+                        : "—"}
+                    </td>
+                    <td>
+                      {u.last_active
+                        ? new Date(u.last_active).toLocaleString()
+                        : "—"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+
             {data.users.length === 0 && (
               <p className="empty-state">No users found.</p>
             )}
@@ -193,126 +251,336 @@ function AdminDashboard() {
               <MessageSquare size={18} color="#16a34a" /> Conversations (
               {data.chats.length})
             </h2>
+
+            <p
+              style={{
+                margin: "0 0 14px",
+                color: "#64748b",
+                fontSize: 14,
+              }}
+            >
+              Click any conversation to open the complete communication
+              between its participants. Text messages and sent media are
+              shown inside the conversation.
+            </p>
+
             <table>
               <thead>
                 <tr>
-                  <th>Chat ID</th>
+                  <th>Conversation</th>
                   <th>Participants</th>
+                  <th>Messages</th>
                   <th>Created</th>
                   <th>Last Activity</th>
                 </tr>
               </thead>
+
               <tbody>
-                {data.chats.map((c) => (
-                  <tr key={c.id} onClick={() => setSelectedChatId(c.id)} style={{ cursor: "pointer" }}>
-                    <td>{c.chatToken}</td>
-                    <td>{c.participants.map((participant) => participant.name).join(", ") || "—"}</td>
-                    <td>{new Date(c.createdAt).toLocaleString()}</td>
-                    <td>{new Date(c.lastActivity).toLocaleString()}</td>
-                  </tr>
-                ))}
+                {data.chats.map((c) => {
+                  const messageCount = data.messages.filter(
+                    (message) => message.chatId === c.id
+                  ).length;
+
+                  return (
+                    <tr
+                      key={c.id}
+                      onClick={() => openConversation(c.id)}
+                      style={{
+                        cursor: "pointer",
+                        background:
+                          selectedChatId === c.id
+                            ? "#f0fdf4"
+                            : undefined,
+                      }}
+                      title="Click to view this conversation"
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openConversation(c.id);
+                          }}
+                          style={{
+                            border: 0,
+                            background: "transparent",
+                            padding: 0,
+                            cursor: "pointer",
+                            color: "#166534",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {c.chatToken}
+                        </button>
+                      </td>
+
+                      <td>{participantNames(c)}</td>
+
+                      <td>{messageCount}</td>
+
+                      <td>
+                        {c.createdAt
+                          ? new Date(c.createdAt).toLocaleString()
+                          : "—"}
+                      </td>
+
+                      <td>
+                        {c.lastActivity
+                          ? new Date(c.lastActivity).toLocaleString()
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+
             {data.chats.length === 0 && (
-              <p className="empty-state">No conversations found.</p>
+              <p className="empty-state">
+                No conversations found.
+              </p>
             )}
           </section>
 
-          <section className="admin-section">
-            <h2>
-              <MessageSquare size={18} color="#16a34a" /> Conversation Viewer
-            </h2>
+          {selectedChat && (
+            <section
+              className="admin-section"
+              style={{
+                border: "2px solid #16a34a",
+                borderRadius: 12,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  padding: "16px 18px",
+                  background: "#f0fdf4",
+                  borderBottom: "1px solid #bbf7d0",
+                }}
+              >
+                <div>
+                  <h2 style={{ marginBottom: 5 }}>
+                    <MessageSquare size={18} color="#16a34a" />{" "}
+                    Conversation
+                  </h2>
 
-            {data.chats.length === 0 ? (
-              <p className="empty-state">No conversations available.</p>
-            ) : (
-              <>
-                <div className="field" style={{ maxWidth: 620 }}>
-                  <label htmlFor="conversation-select">Select a conversation</label>
-                  <select
-                    id="conversation-select"
-                    value={selectedChatId || ""}
-                    onChange={(e) => setSelectedChatId(e.target.value || null)}
+                  <div
+                    style={{
+                      color: "#475569",
+                      fontSize: 14,
+                    }}
                   >
-                    <option value="">Choose a conversation...</option>
-                    {data.chats.map((chat) => (
-                      <option key={chat.id} value={chat.id}>
-                        {chat.participants.map((p) => p.name).join(", ") || "Unknown users"} — {chat.chatToken}
-                      </option>
-                    ))}
-                  </select>
+                    {participantNames(selectedChat)}
+                  </div>
                 </div>
 
-                {selectedChatId && (
-                  <div className="messages-area" style={{ maxHeight: 500, marginTop: 16 }}>
-                    {data.messages.filter((message) => message.chatId === selectedChatId).length === 0 ? (
-                      <p className="empty-state">No messages have been sent in this conversation.</p>
-                    ) : (
-                      data.messages
-                        .filter((message) => message.chatId === selectedChatId)
-                        .slice()
-                        .reverse()
-                        .map((message) => (
-                          <div key={message.id} className="card" style={{ marginBottom: 10 }}>
-                            <strong>{message.senderName}</strong>
-                            <span style={{ marginLeft: 8, opacity: 0.65 }}>@{message.senderUsername}</span>
-                            <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>
-                              {message.message || "[File attachment]"}
-                            </div>
-                            {message.fileName && (
-                              <div style={{ marginTop: 6 }}>
-                                <a href={message.fileUrl} target="_blank" rel="noopener noreferrer">
-                                  {message.fileName} ({formatFileSize(message.fileSize || 0)})
-                                </a>
-                              </div>
-                            )}
-                            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.65 }}>
-                              {new Date(message.createdAt).toLocaleString()}
-                            </div>
-                          </div>
-                        ))
-                    )}
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={closeConversation}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div
+                style={{
+                  padding: 18,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  maxHeight: 650,
+                  overflowY: "auto",
+                  background: "#f8fafc",
+                }}
+              >
+                {selectedMessages.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No messages have been sent in this conversation.</p>
                   </div>
+                ) : (
+                  selectedMessages.map((m) => (
+                    <div
+                      key={m.id}
+                      style={{
+                        background: "#fff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 12,
+                        padding: 14,
+                        boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 12,
+                          marginBottom: 7,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <strong>
+                          {m.senderName}
+                          {m.senderUsername
+                            ? ` (@${m.senderUsername})`
+                            : ""}
+                        </strong>
+
+                        <span
+                          style={{
+                            color: "#64748b",
+                            fontSize: 12,
+                          }}
+                        >
+                          {m.createdAt
+                            ? new Date(
+                                m.createdAt
+                              ).toLocaleString()
+                            : "—"}
+                        </span>
+                      </div>
+
+                      {m.message && (
+                        <div
+                          style={{
+                            color: "#1e293b",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            lineHeight: 1.55,
+                          }}
+                        >
+                          {m.message}
+                        </div>
+                      )}
+
+                      {m.fileUrl && (
+                        <div
+                          style={{
+                            marginTop: m.message ? 10 : 0,
+                            padding: 10,
+                            borderRadius: 8,
+                            background: "#f1f5f9",
+                          }}
+                        >
+                          <FileText
+                            size={16}
+                            style={{
+                              verticalAlign: "middle",
+                              marginRight: 7,
+                            }}
+                          />
+
+                          <a
+                            href={m.fileUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: "#166534",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {m.fileName || "Open attachment"}
+                          </a>
+
+                          {m.fileSize ? (
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                color: "#64748b",
+                                fontSize: 12,
+                              }}
+                            >
+                              ({formatFileSize(m.fileSize)})
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ))
                 )}
-              </>
-            )}
-          </section>
+              </div>
+            </section>
+          )}
 
           <section className="admin-section">
             <h2>
-              <FileText size={18} color="#16a34a" /> Messages (
+              <FileText size={18} color="#16a34a" /> All Messages (
               {data.messages.length})
             </h2>
+
             <table>
               <thead>
                 <tr>
                   <th>Sender</th>
-                  <th>Chat</th>
+                  <th>Conversation</th>
                   <th>Message</th>
                   <th>Attached File</th>
                   <th>Date</th>
                 </tr>
               </thead>
+
               <tbody>
                 {data.messages.map((m) => (
-                  <tr key={m.id}>
-                    <td>{m.senderName} (@{m.senderUsername})</td>
+                  <tr
+                    key={m.id}
+                    onClick={() => openConversation(m.chatId)}
+                    style={{
+                      cursor: m.chatId ? "pointer" : "default",
+                    }}
+                    title={
+                      m.chatId
+                        ? "Click to open this conversation"
+                        : undefined
+                    }
+                  >
+                    <td>
+                      {m.senderName} (@{m.senderUsername})
+                    </td>
+
                     <td>{m.chatToken}</td>
-                    <td>{m.message || "—"}</td>
+
+                    <td
+                      style={{
+                        maxWidth: 420,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {m.message || "—"}
+                    </td>
+
                     <td>
                       {m.fileName ? (
-                        <a href={m.fileUrl} target="_blank" rel="noopener noreferrer">
-                          {m.fileName} ({formatFileSize(m.fileSize || 0)})
+                        <a
+                          href={m.fileUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(event) =>
+                            event.stopPropagation()
+                          }
+                        >
+                          {m.fileName} (
+                          {formatFileSize(m.fileSize || 0)})
                         </a>
                       ) : (
                         "—"
                       )}
                     </td>
-                    <td>{new Date(m.createdAt).toLocaleString()}</td>
+
+                    <td>
+                      {m.createdAt
+                        ? new Date(m.createdAt).toLocaleString()
+                        : "—"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+
             {data.messages.length === 0 && (
               <p className="empty-state">No messages found.</p>
             )}

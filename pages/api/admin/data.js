@@ -135,41 +135,27 @@ export default async function handler(req, res) {
       );
     });
 
-  const shapedMessages = messages
-    .map((message) => {
-      const sender = usersById.get(message.sender_id);
-      const chat = chatsById.get(message.chat_id);
+  // Keep the complete message history available to the admin UI.
+  // The search box filters registered clients and conversation rows, but it
+  // must not remove older messages from an opened conversation.
+  const shapedMessages = messages.map((message) => {
+    const sender = usersById.get(message.sender_id);
+    const chat = chatsById.get(message.chat_id);
 
-      return {
-        id: message.id,
-        chatId: message.chat_id,
-        message: message.message,
-        fileName: message.file_name,
-        fileType: message.file_type,
-        fileSize: message.file_size,
-        fileUrl: message.file_url,
-        createdAt: message.created_at,
-        chatToken: chat?.chat_token || "Unknown chat",
-        senderName: sender?.name || "Unknown user",
-        senderUsername: sender?.username || "unknown",
-      };
-    })
-    .filter((message) => {
-      if (!search) return true;
-
-      const haystack = [
-        message.message,
-        message.fileName,
-        message.chatToken,
-        message.senderName,
-        message.senderUsername,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(search);
-    });
+    return {
+      id: message.id,
+      chatId: message.chat_id,
+      message: message.message,
+      fileName: message.file_name,
+      fileType: message.file_type,
+      fileSize: message.file_size,
+      fileUrl: message.file_url,
+      createdAt: message.created_at,
+      chatToken: chat?.chat_token || "Unknown chat",
+      senderName: sender?.name || "Unknown user",
+      senderUsername: sender?.username || "unknown",
+    };
+  });
 
   return res.status(200).json({
     users: shapedUsers,
