@@ -77,8 +77,7 @@ function AdminLogin() {
           </button>
         </form>
       </div>
-      </div>
-    </>
+    </div>
   );
 }
 
