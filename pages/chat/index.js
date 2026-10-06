@@ -12,6 +12,8 @@ import {
   Bell,
   Settings,
   UserCircle,
+  X,
+  KeyRound,
 } from "lucide-react";
 import { getUserIdFromRequest } from "../../lib/session";
 import { supabaseAdmin } from "../../lib/supabaseAdmin";
@@ -66,6 +68,16 @@ export default function ChatDashboard({ user, chats }) {
   const [newLink, setNewLink] = useState("");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settings, setSettings] = useState({
+    currentPassword: "",
+    username: user.username || "",
+    newPassword: "",
+    confirmPassword: "",
+  });
 
   async function handleCreateChat() {
     setCreating(true);
@@ -97,6 +109,97 @@ export default function ChatDashboard({ user, chats }) {
     router.push("/");
   }
 
+  function openSettings() {
+    setSettings({
+      currentPassword: "",
+      username: user.username || "",
+      newPassword: "",
+      confirmPassword: "",
+    });
+    setSettingsError("");
+    setSettingsMessage("");
+    setShowSettings(true);
+  }
+
+  function closeSettings() {
+    if (settingsLoading) return;
+    setShowSettings(false);
+    setSettingsError("");
+    setSettingsMessage("");
+  }
+
+  async function handleSettingsSubmit(event) {
+    event.preventDefault();
+    setSettingsError("");
+    setSettingsMessage("");
+
+    const usernameChanged =
+      settings.username.trim().toLowerCase() !==
+      String(user.username || "").toLowerCase();
+
+    if (!usernameChanged && !settings.newPassword) {
+      setSettingsError("Change your username or enter a new password.");
+      return;
+    }
+
+    if (settings.newPassword !== settings.confirmPassword) {
+      setSettingsError("The new passwords do not match.");
+      return;
+    }
+
+    if (settings.newPassword && settings.newPassword.length < 6) {
+      setSettingsError("New password must be at least 6 characters.");
+      return;
+    }
+
+    if (!settings.currentPassword) {
+      setSettingsError("Enter your current password to continue.");
+      return;
+    }
+
+    setSettingsLoading(true);
+
+    try {
+      const response = await fetch("/api/account/update-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: settings.currentPassword,
+          username: usernameChanged ? settings.username : undefined,
+          newPassword: settings.newPassword || undefined,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setSettingsError(data.error || "Could not update your settings.");
+        return;
+      }
+
+      setSettingsMessage(data.message || "Settings updated successfully.");
+
+      if (data.user?.username) {
+        setSettings((current) => ({
+          ...current,
+          username: data.user.username,
+          currentPassword: "",
+          newPassword: "",
+          confirmPassword: "",
+        }));
+      }
+
+      // Refresh the dashboard so the new username is immediately displayed.
+      if (data.user?.username) {
+        router.replace(router.asPath);
+      }
+    } catch (err) {
+      setSettingsError("Something went wrong while saving your settings.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
   return (
     <div>
       <div className="topbar">
@@ -108,7 +211,12 @@ export default function ChatDashboard({ user, chats }) {
           <button className="btn-icon" title="Notifications">
             <Bell size={20} />
           </button>
-          <button className="btn-icon" title="Settings">
+          <button
+            className="btn-icon"
+            onClick={openSettings}
+            title="Settings"
+            aria-label="Settings"
+          >
             <Settings size={20} />
           </button>
           <button className="btn-icon" title="Your profile">
@@ -179,6 +287,128 @@ export default function ChatDashboard({ user, chats }) {
           </div>
         ))}
       </div>
+
+      {showSettings && (
+        <div className="settings-overlay" role="dialog" aria-modal="true">
+          <div className="settings-modal">
+            <div className="settings-modal-header">
+              <div>
+                <div className="settings-title">
+                  <KeyRound size={19} />
+                  Account Settings
+                </div>
+                <p className="settings-subtitle">
+                  Change your username or password securely.
+                </p>
+              </div>
+              <button
+                className="btn-icon"
+                type="button"
+                onClick={closeSettings}
+                disabled={settingsLoading}
+                title="Close settings"
+                aria-label="Close settings"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSettingsSubmit}>
+              <label className="settings-label" htmlFor="settings-username">
+                Username
+              </label>
+              <input
+                id="settings-username"
+                className="settings-input"
+                value={settings.username}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    username: event.target.value,
+                  }))
+                }
+                autoComplete="username"
+                maxLength={20}
+              />
+
+              <label className="settings-label" htmlFor="settings-current-password">
+                Current password
+              </label>
+              <input
+                id="settings-current-password"
+                className="settings-input"
+                type="password"
+                value={settings.currentPassword}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    currentPassword: event.target.value,
+                  }))
+                }
+                autoComplete="current-password"
+                placeholder="Required to save changes"
+              />
+
+              <label className="settings-label" htmlFor="settings-new-password">
+                New password
+              </label>
+              <input
+                id="settings-new-password"
+                className="settings-input"
+                type="password"
+                value={settings.newPassword}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    newPassword: event.target.value,
+                  }))
+                }
+                autoComplete="new-password"
+                placeholder="Leave blank to keep your password"
+              />
+
+              <label className="settings-label" htmlFor="settings-confirm-password">
+                Confirm new password
+              </label>
+              <input
+                id="settings-confirm-password"
+                className="settings-input"
+                type="password"
+                value={settings.confirmPassword}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    confirmPassword: event.target.value,
+                  }))
+                }
+                autoComplete="new-password"
+                placeholder="Repeat the new password"
+              />
+
+              {settingsError && (
+                <p className="error-text settings-feedback">{settingsError}</p>
+              )}
+              {settingsMessage && (
+                <p className="success-text settings-feedback">{settingsMessage}</p>
+              )}
+
+              <div className="settings-actions">
+                <button
+                  className="btn secondary-btn"
+                  type="button"
+                  onClick={closeSettings}
+                  disabled={settingsLoading}
+                >
+                  Cancel
+                </button>
+                <button className="btn" type="submit" disabled={settingsLoading}>
+                  {settingsLoading ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,27 +18,57 @@ export default async function handler(req, res) {
 
   // Load the base tables independently. The service-role client is used here,
   // so the admin panel can always see the complete conversation history.
-  const [usersResult, chatsResult, membersResult, messagesResult] =
-    await Promise.all([
-      supabaseAdmin
-        .from("users")
-        .select("id, name, username, created_at, last_active")
-        .order("created_at", { ascending: false }),
-      supabaseAdmin
-        .from("chats")
-        .select("id, chat_token, created_at, last_activity, created_by")
-        .order("last_activity", { ascending: false }),
-      supabaseAdmin
-        .from("chat_members")
-        .select("chat_id, user_id"),
-      supabaseAdmin
-        .from("messages")
-        .select(
-          "id, chat_id, sender_id, message, file_name, file_type, file_size, file_url, created_at"
-        )
-        .order("created_at", { ascending: false })
-        .limit(500),
-    ]);
+  const [usersResult, chatsResult, membersResult] = await Promise.all([
+    supabaseAdmin
+      .from("users")
+      .select("id, name, username, created_at, last_active")
+      .order("created_at", { ascending: false }),
+    supabaseAdmin
+      .from("chats")
+      .select("id, chat_token, created_at, last_activity, created_by")
+      .order("last_activity", { ascending: false }),
+    supabaseAdmin
+      .from("chat_members")
+      .select("chat_id, user_id"),
+  ]);
+
+  // Supabase projects commonly cap a single REST response at 1,000 rows.
+  // Fetch message pages so older client messages are not silently hidden
+  // from the administrator.
+  const allMessages = [];
+  const MESSAGE_PAGE_SIZE = 1000;
+  let messageFrom = 0;
+
+  while (true) {
+    const { data: page, error: pageError } = await supabaseAdmin
+      .from("messages")
+      .select(
+        "id, chat_id, sender_id, message, file_name, file_type, file_size, file_url, created_at"
+      )
+      .order("created_at", { ascending: false })
+      .range(messageFrom, messageFrom + MESSAGE_PAGE_SIZE - 1);
+
+    if (pageError) {
+      console.error("Admin messages error:", pageError);
+      return res.status(500).json({
+        error: "Could not load admin messages.",
+        detail:
+          process.env.NODE_ENV === "development"
+            ? pageError.message
+            : undefined,
+      });
+    }
+
+    allMessages.push(...(page || []));
+
+    if (!page || page.length < MESSAGE_PAGE_SIZE) {
+      break;
+    }
+
+    messageFrom += MESSAGE_PAGE_SIZE;
+  }
+
+  const messagesResult = { data: allMessages, error: null };
 
   const firstError =
     usersResult.error ||
@@ -105,24 +135,41 @@ export default async function handler(req, res) {
       );
     });
 
-  const shapedMessages = messages.map((message) => {
-    const sender = usersById.get(message.sender_id);
-    const chat = chatsById.get(message.chat_id);
+  const shapedMessages = messages
+    .map((message) => {
+      const sender = usersById.get(message.sender_id);
+      const chat = chatsById.get(message.chat_id);
 
-    return {
-      id: message.id,
-      chatId: message.chat_id,
-      message: message.message,
-      fileName: message.file_name,
-      fileType: message.file_type,
-      fileSize: message.file_size,
-      fileUrl: message.file_url,
-      createdAt: message.created_at,
-      chatToken: chat?.chat_token || "Unknown chat",
-      senderName: sender?.name || "Unknown user",
-      senderUsername: sender?.username || "unknown",
-    };
-  });
+      return {
+        id: message.id,
+        chatId: message.chat_id,
+        message: message.message,
+        fileName: message.file_name,
+        fileType: message.file_type,
+        fileSize: message.file_size,
+        fileUrl: message.file_url,
+        createdAt: message.created_at,
+        chatToken: chat?.chat_token || "Unknown chat",
+        senderName: sender?.name || "Unknown user",
+        senderUsername: sender?.username || "unknown",
+      };
+    })
+    .filter((message) => {
+      if (!search) return true;
+
+      const haystack = [
+        message.message,
+        message.fileName,
+        message.chatToken,
+        message.senderName,
+        message.senderUsername,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(search);
+    });
 
   return res.status(200).json({
     users: shapedUsers,
